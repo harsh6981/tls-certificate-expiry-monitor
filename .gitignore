@@ -1,0 +1,7 @@
+demo/certs/
+reports/
+__pycache__/
+*.pyc
+
+# Python virtual environment
+.venv/

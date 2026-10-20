@@ -1,0 +1,6 @@
+.git
+.github
+demo/certs
+reports
+tests
+__pycache__

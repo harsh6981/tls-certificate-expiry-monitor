@@ -1,0 +1,15 @@
+# Demo targets: the four nginx listeners from docker-compose.yml.
+# verify: false because the demo certificates are self-signed.
+hosts:
+  - host: nginx
+    port: 8441   # ok        (90 days left)
+    verify: false
+  - host: nginx
+    port: 8442   # warning   (20 days left)
+    verify: false
+  - host: nginx
+    port: 8443   # critical  (3 days left)
+    verify: false
+  - host: nginx
+    port: 8444   # failed    (expired 5 days ago)
+    verify: false

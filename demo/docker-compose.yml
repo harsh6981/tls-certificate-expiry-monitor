@@ -1,0 +1,28 @@
+# Local demo stack. Run from the repo root:
+#   ./demo/gen-certs.sh broken
+#   docker compose -f demo/docker-compose.yml up -d nginx
+#   docker compose -f demo/docker-compose.yml run --rm checker     # red
+#   ./demo/gen-certs.sh renewed
+#   docker compose -f demo/docker-compose.yml exec nginx nginx -s reload
+#   docker compose -f demo/docker-compose.yml run --rm checker     # green
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certs:/certs:ro
+    ports:
+      - "8441:8441"
+      - "8442:8442"
+      - "8443:8443"
+      - "8444:8444"
+
+  checker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    depends_on:
+      - nginx
+    volumes:
+      - ./domains.demo.yml:/config/domains.yml:ro
+      - ../reports:/reports

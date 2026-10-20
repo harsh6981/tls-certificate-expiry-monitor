@@ -1,0 +1,16 @@
+# Hosts to monitor. Edit this file; the daily GitHub Action picks it up.
+#
+# Each entry is either "host", "host:port", or a mapping with host/port/verify.
+# verify: false skips the chain/hostname check (use it for self-signed or
+# internal certs); expiry is always checked.
+
+warn_days: 30       # <= 30 days left  -> warning
+critical_days: 7    # <= 7 days left   -> critical (run fails)
+timeout: 10         # seconds per connection
+
+hosts:
+  - github.com
+  - www.python.org
+  - letsencrypt.org
+  - host: example.com
+    port: 443

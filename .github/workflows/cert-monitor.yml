@@ -1,0 +1,83 @@
+name: cert-monitor
+
+on:
+  schedule:
+    - cron: "17 6 * * *"          # daily, 06:17 UTC
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: "production = check domains.yml; demo-* = start the nginx demo stack first"
+        type: choice
+        default: production
+        options:
+          - production
+          - demo-broken      # expired + expiring certs  -> red run, opens an issue
+          - demo-renewed     # all certs renewed          -> green run, closes the issue
+  push:
+    branches: [main]
+    paths-ignore: ["**.md"]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: cert-monitor
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SCENARIO: ${{ inputs.scenario || 'production' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Check certificates
+        id: check
+        run: |
+          mkdir -p reports
+          set +e   # keep going so the issue step can run; we fail explicitly at the end
+          if [ "$SCENARIO" = "production" ]; then
+            docker build -t cert-checker .
+            docker run --rm -v "$PWD:/work" cert-checker \
+              --config /work/domains.yml --out /work/reports
+          else
+            ./demo/gen-certs.sh "${SCENARIO#demo-}"
+            docker compose -f demo/docker-compose.yml up -d --build nginx
+            sleep 3
+            docker compose -f demo/docker-compose.yml run --rm --build checker
+          fi
+          code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Job summary
+        if: always()
+        run: |
+          if [ -f reports/report.md ]; then cat reports/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cert-report
+          path: reports/
+          if-no-files-found: ignore
+
+      - name: Open, update or close the alert issue
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await require('./.github/scripts/cert-issue.js')({ github, context, core });
+
+      - name: Fail the run if any certificate is critical or failed
+        if: steps.check.outputs.exit_code != '0'
+        run: |
+          echo "::error::Certificate check exited with code ${{ steps.check.outputs.exit_code }} (see job summary)."
+          exit 1
