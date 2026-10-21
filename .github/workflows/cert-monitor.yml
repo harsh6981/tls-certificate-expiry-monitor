@@ -1,83 +1,124 @@
 name: cert-monitor
 
 on:
-  schedule:
-    - cron: "17 6 * * *"          # daily, 06:17 UTC
-  workflow_dispatch:
-    inputs:
-      scenario:
-        description: "production = check domains.yml; demo-* = start the nginx demo stack first"
-        type: choice
-        default: production
-        options:
-          - production
-          - demo-broken      # expired + expiring certs  -> red run, opens an issue
-          - demo-renewed     # all certs renewed          -> green run, closes the issue
-  push:
-    branches: [main]
-    paths-ignore: ["**.md"]
+schedule:
+- cron: "17 6 * * *"
+
+workflow_dispatch:
+inputs:
+scenario:
+description: "production = check domains.yml; demo-* = start the nginx demo stack first"
+type: choice
+default: production
+options:
+- production
+- demo-broken
+- demo-renewed
+
+push:
+branches: [main]
+paths-ignore: ["**.md"]
 
 permissions:
-  contents: read
-  issues: write
+contents: read
+issues: write
 
 concurrency:
-  group: cert-monitor
-  cancel-in-progress: false
+group: cert-monitor
+cancel-in-progress: false
 
 jobs:
-  check:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    env:
-      SCENARIO: ${{ inputs.scenario || 'production' }}
-    steps:
-      - uses: actions/checkout@v4
+check:
+runs-on: ubuntu-latest
+timeout-minutes: 10
 
-      - name: Unit tests
-        run: python3 -m unittest discover -s tests -v
+```
+env:
+  SCENARIO: ${{ inputs.scenario || 'production' }}
 
-      - name: Check certificates
-        id: check
-        run: |
-          mkdir -p reports
-          set +e   # keep going so the issue step can run; we fail explicitly at the end
-          if [ "$SCENARIO" = "production" ]; then
-            docker build -t cert-checker .
-            docker run --rm -v "$PWD:/work" cert-checker \
-              --config /work/domains.yml --out /work/reports
-          else
-            ./demo/gen-certs.sh "${SCENARIO#demo-}"
-            docker compose -f demo/docker-compose.yml up -d --build nginx
-            sleep 3
-            docker compose -f demo/docker-compose.yml run --rm --build checker
-          fi
+steps:
+  - name: Checkout repository
+    uses: actions/checkout@v4
+
+  - name: Set up Python
+    uses: actions/setup-python@v5
+    with:
+      python-version: "3.12"
+
+  - name: Unit tests
+    run: python -m unittest discover -s tests -v
+
+  - name: Validate Docker image build
+    run: docker build --tag cert-checker .
+
+  - name: Check certificates
+    id: check
+    shell: bash
+    run: |
+      mkdir -p reports
+      set +e
+
+      if [ "$SCENARIO" = "production" ]; then
+        docker run --rm \
+          -v "$PWD:/work" \
+          cert-checker \
+          --config /work/domains.yml \
+          --out /work/reports
+        code=$?
+      else
+        ./demo/gen-certs.sh "${SCENARIO#demo-}"
+        code=$?
+
+        if [ "$code" -eq 0 ]; then
+          docker compose -f demo/docker-compose.yml up -d --build nginx
           code=$?
-          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
-          exit 0
+        fi
 
-      - name: Job summary
-        if: always()
-        run: |
-          if [ -f reports/report.md ]; then cat reports/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+        if [ "$code" -eq 0 ]; then
+          sleep 3
+          docker compose -f demo/docker-compose.yml run --rm --build checker
+          code=$?
+        fi
+      fi
 
-      - name: Upload report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: cert-report
-          path: reports/
-          if-no-files-found: ignore
+      echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+      exit 0
 
-      - name: Open, update or close the alert issue
-        if: always()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await require('./.github/scripts/cert-issue.js')({ github, context, core });
+  - name: Job summary
+    if: always()
+    run: |
+      if [ -f reports/report.md ]; then
+        cat reports/report.md >> "$GITHUB_STEP_SUMMARY"
+      else
+        echo "No certificate report was generated." >> "$GITHUB_STEP_SUMMARY"
+      fi
 
-      - name: Fail the run if any certificate is critical or failed
-        if: steps.check.outputs.exit_code != '0'
-        run: |
-          echo "::error::Certificate check exited with code ${{ steps.check.outputs.exit_code }} (see job summary)."
-          exit 1
+  - name: Upload report
+    if: always()
+    uses: actions/upload-artifact@v4
+    with:
+      name: cert-report
+      path: reports/
+      if-no-files-found: ignore
+
+  - name: Open, update or close the alert issue
+    if: always()
+    uses: actions/github-script@v7
+    with:
+      script: |
+        await require('./.github/scripts/cert-issue.js')({
+          github,
+          context,
+          core
+        });
+
+  - name: Fail the run if the certificate check failed
+    if: steps.check.outputs.exit_code != '0'
+    run: |
+      echo "::error::Certificate check exited with code ${{ steps.check.outputs.exit_code }} (see job summary)."
+      exit 1
+
+  - name: Stop demo containers
+    if: always() && env.SCENARIO != 'production'
+    run: docker compose -f demo/docker-compose.yml down --volumes --remove-orphans
+```
